@@ -82,7 +82,6 @@ import static androidx.core.app.ActivityCompat.requestPermissions;
 import static io.wazo.callkeep.Constants.EXTRA_CALLER_NAME;
 import static io.wazo.callkeep.Constants.EXTRA_CALL_UUID;
 import static io.wazo.callkeep.Constants.EXTRA_CALL_NUMBER;
-import static io.wazo.callkeep.Constants.EXTRA_HAS_VIDEO;
 import static io.wazo.callkeep.Constants.ACTION_END_CALL;
 import static io.wazo.callkeep.Constants.ACTION_ANSWER_CALL;
 import static io.wazo.callkeep.Constants.ACTION_MUTE_CALL;
@@ -152,7 +151,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
         this.reactContext = reactContext;
         delayedEvents = new WritableNativeArray();
         this.registerReceiver();
-        this.fetchStoredSettings(reactContext);
     }
 
     private boolean isSelfManaged() {
@@ -179,15 +177,15 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     public void reportNewIncomingCall(String uuid, String number, String callerName, boolean hasVideo, String payload) {
         Log.d(TAG, "[RNCallKeepModule] reportNewIncomingCall, uuid: " + uuid + ", number: " + number + ", callerName: " + callerName);
+        // @TODO: handle video
 
-        this.displayIncomingCall(uuid, number, callerName, hasVideo);
+        this.displayIncomingCall(uuid, number, callerName);
 
         // Send event to JS
         WritableMap args = Arguments.createMap();
         args.putString("handle", number);
         args.putString("callUUID", uuid);
         args.putString("name", callerName);
-        args.putString("hasVideo", String.valueOf(hasVideo));
         if (payload != null) {
             args.putString("payload", payload);
         }
@@ -218,11 +216,13 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setSettings(ReadableMap options) {
-        Log.d(TAG, "[RNCallKeepModule] setSettings : " + options);
         if (options == null) {
             return;
         }
-        _settings = storeSettings(options);
+        Log.d(TAG, "[RNCallKeepModule] setSettings: " + options);
+        storeSettings(options);
+
+        _settings = getSettings(null);
     }
 
     @ReactMethod
@@ -237,7 +237,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void setup(ReadableMap options) {
-        Log.d(TAG, "[RNCallKeepModule] setup : " + options);
+        Log.d(TAG, "[RNCallKeepModule] setup");
 
         VoiceConnectionService.setAvailable(false);
         VoiceConnectionService.setInitialized(true);
@@ -268,7 +268,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void registerPhoneAccount(ReadableMap options) {
-        setSettings(options);
+        storeSettings(options);
 
         if (!isConnectionServiceAvailable()) {
             Log.w(TAG, "[RNCallKeepModule] registerPhoneAccount ignored due to no ConnectionService");
@@ -308,17 +308,12 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void displayIncomingCall(String uuid, String number, String callerName) {
-        this.displayIncomingCall(uuid, number, callerName, false);
-    }
-
-    @ReactMethod
-    public void displayIncomingCall(String uuid, String number, String callerName, boolean hasVideo) {
         if (!isConnectionServiceAvailable() || !hasPhoneAccount()) {
             Log.w(TAG, "[RNCallKeepModule] displayIncomingCall ignored due to no ConnectionService or no phone account");
             return;
         }
 
-        Log.d(TAG, "[RNCallKeepModule] displayIncomingCall, uuid: " + uuid + ", number: " + number + ", callerName: " + callerName + ", hasVideo: " + hasVideo);
+        Log.d(TAG, "[RNCallKeepModule] displayIncomingCall, uuid: " + uuid + ", number: " + number + ", callerName: " + callerName);
 
         Bundle extras = new Bundle();
         Uri uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, number, null);
@@ -326,7 +321,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
         extras.putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, uri);
         extras.putString(EXTRA_CALLER_NAME, callerName);
         extras.putString(EXTRA_CALL_UUID, uuid);
-        extras.putString(EXTRA_HAS_VIDEO, String.valueOf(hasVideo));
 
         telecomManager.addNewIncomingCall(handle, extras);
     }
@@ -350,11 +344,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void startCall(String uuid, String number, String callerName) {
-        this.startCall(uuid, number, callerName, false);
-    }
-
-    @ReactMethod
-    public void startCall(String uuid, String number, String callerName, boolean hasVideo) {
         Log.d(TAG, "[RNCallKeepModule] startCall called, uuid: " + uuid + ", number: " + number + ", callerName: " + callerName);
 
         if (!isConnectionServiceAvailable() || !hasPhoneAccount() || !hasPermissions() || number == null) {
@@ -369,7 +358,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
         callExtras.putString(EXTRA_CALLER_NAME, callerName);
         callExtras.putString(EXTRA_CALL_UUID, uuid);
         callExtras.putString(EXTRA_CALL_NUMBER, number);
-        callExtras.putString(EXTRA_HAS_VIDEO, String.valueOf(hasVideo));
 
         extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle);
         extras.putParcelable(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, callExtras);
@@ -693,16 +681,12 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             WritableArray devices = Arguments.createArray();
             ArrayList<String> typeChecker = new ArrayList<>();
             AudioDeviceInfo[] audioDeviceInfo = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS + AudioManager.GET_DEVICES_OUTPUTS);
-            String selectedAudioRoute = getSelectedAudioRoute(audioManager);
             for (AudioDeviceInfo device : audioDeviceInfo){
                 String type = getAudioRouteType(device.getType());
                 if(type != null && !typeChecker.contains(type)) {
                     WritableMap deviceInfo = Arguments.createMap();
                     deviceInfo.putString("name",  type);
                     deviceInfo.putString("type",  type);
-                    if(type.equals(selectedAudioRoute)) {
-                        deviceInfo.putBoolean("selected",  true);
-                    }
                     typeChecker.add(type);
                     devices.pushMap(deviceInfo);
                 }
@@ -728,19 +712,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             default:
                 return null;
         }
-    }
-
-    private String getSelectedAudioRoute(AudioManager audioManager){
-        if(audioManager.isBluetoothScoOn()){
-            return "Bluetooth";
-        }
-        if(audioManager.isSpeakerphoneOn()){
-            return "Speaker";
-        }
-        if(audioManager.isWiredHeadsetOn()){
-            return "Headset";
-        }
-        return "Phone";
     }
 
     @ReactMethod
@@ -804,7 +775,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             settings.putMap("foregroundService", MapUtils.readableToWritableMap(foregroundServerSettings));
         }
 
-        setSettings(settings);
+        storeSettings(settings);
     }
 
     @ReactMethod
@@ -994,10 +965,20 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
     }
 
     private Boolean hasPermissions() {
+        // Activity currentActivity = this.getCurrentReactActivity();
+
+        // if (currentActivity == null) {
+        //     return false;
+        // }
+
+        // NEW added
         ReactApplicationContext context = getContext();
 
         boolean hasPermissions = true;
         for (String permission : permissions) {
+            // int permissionCheck = ContextCompat.checkSelfPermission(currentActivity, permission);
+
+            //new added
             int permissionCheck = ContextCompat.checkSelfPermission(context, permission);
             if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
                 hasPermissions = false;
@@ -1008,14 +989,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
     }
 
     private boolean hasPhoneAccount() {
-        if (telecomManager == null) {
-            this.initializeTelecomManager();
-        }
-
-        if (isSelfManaged()) {
-            return true;
-        }
-
         return isConnectionServiceAvailable() && telecomManager != null &&
             hasPermissions() && telecomManager.getPhoneAccount(handle) != null &&
             telecomManager.getPhoneAccount(handle).isEnabled();
@@ -1054,11 +1027,11 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
     }
 
     // Store all callkeep settings in JSON
-    private WritableMap storeSettings(ReadableMap options) {
-        Context context = getAppContext();
+    private void storeSettings(ReadableMap options) {
+        Context context = getInstance(null, false).getAppContext();
         if (context == null) {
             Log.w(TAG, "[RNCallKeepModule][storeSettings] no react context found.");
-            return MapUtils.readableToWritableMap(options);
+            return;
         }
 
         SharedPreferences sharedPref = context.getSharedPreferences("rn-callkeep", Context.MODE_PRIVATE);
@@ -1067,17 +1040,15 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             String jsonString = jsonObject.toString();
             sharedPref.edit().putString("settings", jsonString).apply();
         } catch (JSONException e) {
-            Log.w(TAG, "[RNCallKeepModule][storeSettings] exception: " + e);
         }
-        return MapUtils.readableToWritableMap(options);
     }
 
     private static void fetchStoredSettings(@Nullable Context fromContext) {
-        Context context = fromContext != null ? fromContext : instance.getAppContext();
-        if (instance == null && context == null) {
+        if (instance == null && fromContext == null) {
             Log.w(TAG, "[RNCallKeepModule][fetchStoredSettings] no instance nor fromContext.");
             return;
         }
+        Context context = fromContext != null ? fromContext : instance.getAppContext();
         _settings = new WritableNativeMap();
         if (context == null) {
             Log.w(TAG, "[RNCallKeepModule][fetchStoredSettings] no react context found.");
@@ -1102,7 +1073,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             WritableMap args = Arguments.createMap();
             HashMap<String, String> attributeMap = (HashMap<String, String>)intent.getSerializableExtra("attributeMap");
 
-            Log.d(TAG, "[RNCallKeepModule][onReceive] " + intent.getAction());
+            Log.d(TAG, "[RNCallKeepModule][onReceive] :" + intent.getAction());
 
             switch (intent.getAction()) {
                 case ACTION_END_CALL:
@@ -1111,7 +1082,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
                     break;
                 case ACTION_ANSWER_CALL:
                     args.putString("callUUID", attributeMap.get(EXTRA_CALL_UUID));
-                    args.putBoolean("withVideo", Boolean.valueOf(attributeMap.get(EXTRA_HAS_VIDEO)));
                     sendEventToJS("RNCallKeepPerformAnswerCallAction", args);
                     break;
                 case ACTION_HOLD_CALL:
@@ -1155,7 +1125,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
                     args.putString("handle", attributeMap.get(EXTRA_CALL_NUMBER));
                     args.putString("callUUID", attributeMap.get(EXTRA_CALL_UUID));
                     args.putString("name", attributeMap.get(EXTRA_CALLER_NAME));
-                    args.putString("hasVideo", attributeMap.get(EXTRA_HAS_VIDEO));
                     sendEventToJS("RNCallKeepShowIncomingCallUi", args);
                     break;
                 case ACTION_WAKE_APP:
@@ -1181,7 +1150,6 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
                     args.putString("callUUID", attributeMap.get(EXTRA_CALL_UUID));
                     args.putString("name", attributeMap.get(EXTRA_CALLER_NAME));
                     sendEventToJS("RNCallKeepOnIncomingConnectionFailed", args);
-                    break;
                 case ACTION_DID_CHANGE_AUDIO_ROUTE:
                     args.putString("handle", attributeMap.get(EXTRA_CALL_NUMBER));
                     args.putString("callUUID", attributeMap.get(EXTRA_CALL_UUID));
